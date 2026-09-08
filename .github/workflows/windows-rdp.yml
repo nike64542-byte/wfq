@@ -1,56 +1,107 @@
-name: Windows Cloud RDP
+name: Kali Cloud SSH + RDP
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 360
 
     steps:
-      - name: 1. Enable Remote Desktop & Firewall
+      - name: 1. Start Kali Linux container
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 0
+          # 拉取 Kali 镜像并启动特权容器（支持 TUN 设备）
+          docker pull kalilinux/kali-rolling
+          docker run -d \
+            --name kali-cloud \
+            --privileged \
+            --device=/dev/net/tun \
+            kalilinux/kali-rolling \
+            sleep infinity
 
-      - name: 2. Create Admin Account
+      - name: 2. Install SSH, RDP, Desktop Environment & Tools
         run: |
-          $Password = ConvertTo-SecureString "P@ssw0rd1qazXSW@#" -AsPlainText -Force
-          New-LocalUser -Name "NvdAdmin" -Password $Password -PasswordNeverExpires -ErrorAction SilentlyContinue
-          Add-LocalGroupMember -Group "Administrators" -Member "NvdAdmin" -ErrorAction SilentlyContinue
-          net user runneradmin P@ssw0rd1qazXSW@#
+          # 更新源并安装所需软件
+          docker exec kali-cloud bash -c "
+            apt-get update &&
+            DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              openssh-server \
+              sudo \
+              curl \
+              xrdp \
+              xfce4 \
+              xfce4-terminal \
+              dbus-x11 \
+              xorgxrdp \
+              --no-install-recommends
+          "
 
-      - name: 3. Install & Connect Tailscale VPN
+      - name: 3. Configure Users and Services
+        run: |
+          # 创建用户并设置密码
+          docker exec kali-cloud bash -c "
+            echo 'root:P@ssw0rd1qazXSW@#' | chpasswd &&
+            useradd -m -s /bin/bash nvdadmin &&
+            echo 'nvdadmin:P@ssw0rd1qazXSW@#' | chpasswd &&
+            usermod -aG sudo nvdadmin &&
+            # 配置 xrdp 使用 XFCE 桌面
+            echo 'xfce4-session' > /home/nvdadmin/.xsession &&
+            chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
+            # 允许 nvdadmin 通过 xrdp 登录
+            sed -i 's/^#*AllowRootLogin=.*/AllowRootLogin=false/' /etc/xrdp/sesman.ini
+          "
+
+      - name: 4. Install & Connect Tailscale VPN
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # Download and install Tailscale silently
-          Invoke-WebRequest "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi" -OutFile "C:\tailscale.msi"
-          Start-Process msiexec -ArgumentList "/i C:\tailscale.msi /quiet /norestart" -Wait
+          # 在容器内安装 Tailscale
+          docker exec kali-cloud bash -c "
+            curl -fsSL https://tailscale.com/install.sh | sh
+          "
+          
+          # 启动 tailscaled 并连接网络
+          docker exec kali-cloud bash -c "
+            mkdir -p /var/run/tailscale /var/lib/tailscale &&
+            tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
+            sleep 5
+            tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=kali-cloud
+          "
+          
+          sleep 10
+          
+          # 获取 Tailscale IP
+          TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
+          echo "=========================================="
+          echo "  >>> KALI CLOUD SERVER IS READY! <<<"
+          echo "  Tailscale IP : $TAILSCALE_IP"
+          echo "------------------------------------------"
+          echo "  SSH Connection:"
+          echo "    ssh nvdadmin@$TAILSCALE_IP"
+          echo "    Password: P@ssw0rd1qazXSW@#"
+          echo "------------------------------------------"
+          echo "  RDP Connection:"
+          echo "    Address: $TAILSCALE_IP:3389"
+          echo "    Username: nvdadmin"
+          echo "    Password: P@ssw0rd1qazXSW@#"
+          echo "------------------------------------------"
+          echo "  >> Use xfreerdp or Windows Remote Desktop"
+          echo "=========================================="
 
-          # Connect to Tailscale network
-          Start-Sleep -Seconds 5
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey="$Env:TAILSCALE_AUTHKEY" --hostname="github-rdp-server"
-
-          Start-Sleep -Seconds 8
-
-          # Get Tailscale IP
-          $ts_ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
-
-          Write-Host ""
-          Write-Host "==========================================" -ForegroundColor Green
-          Write-Host "  >>> RDP SERVER IS READY! <<<" -ForegroundColor Cyan
-          Write-Host "  Tailscale IP : $ts_ip" -ForegroundColor Yellow
-          Write-Host "  Username     : NvdAdmin" -ForegroundColor Yellow
-          Write-Host "  Password     : P@ssw0rd1qazXSW@#" -ForegroundColor Yellow
-          Write-Host "  >> Open mstsc and connect to: $ts_ip" -ForegroundColor Magenta
-          Write-Host "==========================================" -ForegroundColor Green
-
-      - name: 4. Keep Server Alive (48 Hours)
+      - name: 5. Start SSH & RDP Services and Keep Alive
         run: |
-          for ($i = 1; $i -le 2880; $i++) {
-              Start-Sleep -Seconds 60
-              Write-Host "[$i/2880] Server running..."
-          }
+          # 启动 SSH 和 xrdp 服务
+          docker exec kali-cloud bash -c "
+            /usr/sbin/sshd
+            /etc/init.d/xrdp start
+          "
+          
+          # 保持容器运行并定时输出状态
+          for i in $(seq 1 360); do
+            sleep 60
+            echo "[$i/360] Server running... (container: $(docker inspect -f '{{.State.Running}}' kali-cloud))"
+            # 检查服务状态
+            docker exec kali-cloud bash -c "pgrep sshd >/dev/null && echo 'SSH: OK' || echo 'SSH: FAILED'"
+            docker exec kali-cloud bash -c "pgrep xrdp >/dev/null && echo 'RDP: OK' || echo 'RDP: FAILED'"
+          done
