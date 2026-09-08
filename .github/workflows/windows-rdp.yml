@@ -53,31 +53,29 @@ jobs:
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # 容器内安装tailscale
-          docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh"
+          # 安装tailscale，忽略安装脚本末尾systemctl启动失败（容器无systemd）
+          docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh || true"
 
-          # 使用docker run -d在容器后台常驻tailscaled，不要用&后台（exec退出会销毁进程）
-          docker exec -d kali-cloud /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock
+          # 用docker exec -d后台常驻启动tailscaled，不用systemctl
+          docker exec -d kali-cloud /usr/sbin/tailscaled \
+            --state=/var/lib/tailscale/tailscaled.state \
+            --socket=/var/run/tailscale/tailscaled.sock
+
           sleep 8
 
+          # 连接tailscale网络
           docker exec kali-cloud bash -c "tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=kali-cloud"
           sleep 10
-          
+
           TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
           echo "=========================================="
           echo "  >>> KALI CLOUD SERVER IS READY! <<<"
           echo "  Tailscale IP : $TAILSCALE_IP"
           echo "------------------------------------------"
-          echo "  SSH Connection:"
-          echo "    ssh nvdadmin@$TAILSCALE_IP"
-          echo "    Password: P@ssw0rd1qazXSW@#"
-          echo "------------------------------------------"
-          echo "  RDP Connection:"
-          echo "    Address: $TAILSCALE_IP:3389"
-          echo "    Username: nvdadmin"
-          echo "    Password: P@ssw0rd1qazXSW@#"
-          echo "------------------------------------------"
-          echo "  >> Use xfreerdp or Windows Remote Desktop"
+          echo "  SSH: ssh nvdadmin@$TAILSCALE_IP"
+          echo "  RDP: $TAILSCALE_IP:3389"
+          echo "  Username: nvdadmin"
+          echo "  Password: P@ssw0rd1qazXSW@#"
           echo "=========================================="
 
       - name: 5. Start SSH & RDP Services and Keep Alive
