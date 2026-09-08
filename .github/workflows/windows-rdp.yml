@@ -11,7 +11,6 @@ jobs:
     steps:
       - name: 1. Start Kali Linux container
         run: |
-          # 拉取 Kali 镜像并启动特权容器（支持 TUN 设备）
           docker pull kalilinux/kali-rolling
           docker run -d \
             --name kali-cloud \
@@ -22,33 +21,31 @@ jobs:
 
       - name: 2. Install SSH, RDP, Desktop Environment & Tools
         run: |
-          # 更新源并安装所需软件
           docker exec kali-cloud bash -c "
             apt-get update &&
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
               curl \
+              ca-certificates \
               xrdp \
               xfce4 \
               xfce4-terminal \
               dbus-x11 \
               xorgxrdp \
               --no-install-recommends
+            update-ca-certificates
           "
 
       - name: 3. Configure Users and Services
         run: |
-          # 创建用户并设置密码
           docker exec kali-cloud bash -c "
             echo 'root:P@ssw0rd1qazXSW@#' | chpasswd &&
             useradd -m -s /bin/bash nvdadmin &&
             echo 'nvdadmin:P@ssw0rd1qazXSW@#' | chpasswd &&
             usermod -aG sudo nvdadmin &&
-            # 配置 xrdp 使用 XFCE 桌面
             echo 'xfce4-session' > /home/nvdadmin/.xsession &&
             chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
-            # 允许 nvdadmin 通过 xrdp 登录
             sed -i 's/^#*AllowRootLogin=.*/AllowRootLogin=false/' /etc/xrdp/sesman.ini
           "
 
@@ -56,22 +53,16 @@ jobs:
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # 在容器内安装 Tailscale
-          docker exec kali-cloud bash -c "
-            curl -fsSL https://tailscale.com/install.sh | sh
-          "
-          
-          # 启动 tailscaled 并连接网络
-          docker exec kali-cloud bash -c "
-            mkdir -p /var/run/tailscale /var/lib/tailscale &&
-            tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock &
-            sleep 5
-            tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=kali-cloud
-          "
-          
+          # 容器内安装tailscale
+          docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh"
+
+          # 使用docker run -d在容器后台常驻tailscaled，不要用&后台（exec退出会销毁进程）
+          docker exec -d kali-cloud /usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock
+          sleep 8
+
+          docker exec kali-cloud bash -c "tailscale up --authkey=${{ secrets.TAILSCALE_AUTHKEY }} --hostname=kali-cloud"
           sleep 10
           
-          # 获取 Tailscale IP
           TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
           echo "=========================================="
           echo "  >>> KALI CLOUD SERVER IS READY! <<<"
@@ -91,17 +82,15 @@ jobs:
 
       - name: 5. Start SSH & RDP Services and Keep Alive
         run: |
-          # 启动 SSH 和 xrdp 服务
           docker exec kali-cloud bash -c "
             /usr/sbin/sshd
             /etc/init.d/xrdp start
           "
           
-          # 保持容器运行并定时输出状态
           for i in $(seq 1 360); do
             sleep 60
             echo "[$i/360] Server running... (container: $(docker inspect -f '{{.State.Running}}' kali-cloud))"
-            # 检查服务状态
             docker exec kali-cloud bash -c "pgrep sshd >/dev/null && echo 'SSH: OK' || echo 'SSH: FAILED'"
             docker exec kali-cloud bash -c "pgrep xrdp >/dev/null && echo 'RDP: OK' || echo 'RDP: FAILED'"
+            docker exec kali-cloud bash -c "pgrep tailscaled >/dev/null && echo 'Tailscale: OK' || echo 'Tailscale: FAILED'"
           done
