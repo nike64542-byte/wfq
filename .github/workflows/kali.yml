@@ -71,7 +71,8 @@ jobs:
 
       - name: 4. Install & Connect Tailscale (ephemeral node)
         env:
-          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          # 在 Runner 环境中读取 Secret
+          TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
           # 安装 Tailscale
           docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh || true"
@@ -86,18 +87,11 @@ jobs:
 
           sleep 5
 
-          # 连接网络，注意这里参数是 --authkey (无横杠)
-          docker exec kali-cloud bash -c "
-            # 等待 tailscaled 守护进程就绪
-            for i in {1..10}; do
-              tailscale status >/dev/null 2>&1 && break
-              echo 'Waiting for tailscaled...'
-              sleep 2
-            done
-            tailscale up --authkey='${{ secrets.TAILSCALE_AUTHKEY }}' --hostname=kali-cloud --ephemeral
-          "
+          # 重点修复：通过 -e 将变量安全注入容器内部，使用双引号包裹，杜绝换行符导致的解析错误
+          docker exec -e INNER_KEY="$TS_KEY" kali-cloud \
+            bash -c 'tailscale up --authkey="$INNER_KEY" --hostname=kali-cloud --ephemeral'
 
-          sleep 5
+          sleep 10
 
           TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
           
