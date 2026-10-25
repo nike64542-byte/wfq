@@ -23,27 +23,28 @@ jobs:
       - name: 2. Fix Mirrors & Install SSH, RDP, Desktop Environment
         run: |
           docker exec kali-cloud bash -c "
-            # 1. 修复镜像源（兼容新旧两种配置文件）
-            sed -i 's@http://http.kali.org/kali@https://kali.download/kali@g' /etc/apt/sources.list 2>/dev/null || true
-            sed -i 's@http://http.kali.org/kali@https://kali.download/kali@g' /etc/apt/sources.list.d/kali.sources 2>/dev/null || true
+            # 1. 直接覆写源列表为 HTTP 协议，并清理可能存在的多余源配置（避免 SSL 报错）
+            echo 'deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list
+            rm -f /etc/apt/sources.list.d/*.sources
             
-            # 2. 清理并更新
+            # 2. 首次更新并安装 ca-certificates（提供 HTTPS 支持）
             apt-get clean &&
             apt-get update &&
+            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates &&
+            update-ca-certificates &&
             
-            # 3. 安装软件
+            # 3. 再次更新（此时已具备 https 能力）并安装所需软件
+            apt-get update &&
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
               curl \
-              ca-certificates \
               xrdp \
               xfce4 \
               xfce4-terminal \
               dbus-x11 \
               xorgxrdp \
-              --no-install-recommends &&
-            update-ca-certificates
+              --no-install-recommends
           "
 
       - name: 3. Configure Users, XRDP session & SSH
@@ -55,13 +56,13 @@ jobs:
             echo 'nvdadmin:P@ssw0rd1qazXSW@#' | chpasswd &&
             usermod -aG sudo nvdadmin &&
 
-            # 配置 XFCE 会话（双保险：.xsession + startwm.sh）
+            # 配置 XFCE 会话（写入 .xsession 和 startwm.sh 双保险）
             echo 'xfce4-session' > /home/nvdadmin/.xsession &&
             chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
             sed -i 's/^#*startxfce4.*/startxfce4/' /etc/xrdp/startwm.sh || true &&
             echo 'startxfce4' >> /etc/xrdp/startwm.sh &&
 
-            # 确保 SSH 允许密码登录
+            # 确保 SSH 允许密码登录，且禁止 root 登录
             sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
             sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
           "
