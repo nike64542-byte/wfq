@@ -20,22 +20,24 @@ jobs:
             kalilinux/kali-rolling \
             sleep infinity
 
-      - name: 2. Switch to Aliyun Mirror & Install SSH, RDP, Desktop Environment
+      - name: 2. Fix Mirrors & Install SSH, RDP, Desktop Environment
         run: |
           docker exec kali-cloud bash -c "
-            # 1. 直接覆写源列表为阿里云 HTTPS 源（国内网络稳定）
-            echo 'deb https://mirrors.aliyun.com/kali kali-rolling main non-free contrib non-free-firmware' > /etc/apt/sources.list
+            # 1. 统一写入阿里云 HTTP 源（规避容器初始缺少 CA 证书导致的 SSL 握手失败）
+            echo 'deb http://mirrors.aliyun.com/kali kali-rolling main non-free contrib non-free-firmware' > /etc/apt/sources.list
             rm -f /etc/apt/sources.list.d/*.sources
 
-            # 2. 首次更新（此时容器内可能尚无 ca-certificates，如果 HTTPS 证书报错则回退 HTTP）
+            # 2. 首次更新并安装基础证书组件
             apt-get clean &&
-            (apt-get update || (sed -i 's@https://@http://@g' /etc/apt/sources.list && apt-get update)) &&
-
-            # 3. 安装基础依赖，包含 ca-certificates 和 curl
-            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl &&
-
-            # 4. 再次更新索引（确保 HTTPS 源完全可用）并安装完整桌面与远程服务
             apt-get update &&
+            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl &&
+            update-ca-certificates &&
+
+            # 3. 证书安装完毕后，将 HTTP 升级为 HTTPS（提升连接安全性）
+            sed -i 's@http://mirrors.aliyun.com/kali@https://mirrors.aliyun.com/kali@g' /etc/apt/sources.list &&
+            apt-get update &&
+
+            # 4. 安装完整桌面与远程服务
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
