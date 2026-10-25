@@ -69,36 +69,38 @@ jobs:
             sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
           "
 
-      - name: 4. Install & Connect Tailscale (ephemeral node)
+      - name: 4. Install & Connect Tailscale
         env:
-          # 在 Runner 环境中读取 Secret
           TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # 安装 Tailscale
+          # 1. 启动 D-Bus 服务（解决 system scope bus Host is down 报错）
+          docker exec kali-cloud bash -c "service dbus start || true"
+
+          # 2. 安装 Tailscale
           docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh || true"
 
-          # 创建必要的状态目录（防止 tailscaled 启动失败）
-          docker exec kali-cloud mkdir -p /var/lib/tailscale /var/run/tailscale
-
-          # 后台启动 tailscaled
-          docker exec -d kali-cloud /usr/sbin/tailscaled \
-            --state=/var/lib/tailscale/tailscaled.state \
-            --socket=/var/run/tailscale/tailscaled.sock
-
+          # 3. 创建状态目录并用 nohup 在后台启动 tailscaled（附带日志）
+          docker exec kali-cloud bash -c "
+            mkdir -p /var/lib/tailscale /var/run/tailscale
+            nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock > /tmp/tailscaled.log 2>&1 &
+          "
           sleep 5
 
-          # 重点修复：通过 -e 将变量安全注入容器内部，使用双引号包裹，杜绝换行符导致的解析错误
+          # 4. 通过环境变量注入 Key，并且移除当前版本不支持的 --ephemeral 参数
           docker exec -e INNER_KEY="$TS_KEY" kali-cloud \
-            bash -c 'tailscale up --authkey="$INNER_KEY" --hostname=kali-cloud --ephemeral'
+            bash -c 'tailscale up --authkey="$INNER_KEY" --hostname=kali-cloud'
 
           sleep 10
 
           TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
           
-          # 增加检查：如果没拿到 IP，打印状态并退出
+          # 检查：如果没拿到 IP，打印 daemon 日志和状态并退出
           if [ -z "$TAILSCALE_IP" ]; then
-            echo "❌ Failed to get Tailscale IP. Current status:"
-            docker exec kali-cloud tailscale status
+            echo "❌ Failed to get Tailscale IP."
+            echo "===== tailscaled log ====="
+            docker exec kali-cloud cat /tmp/tailscaled.log || true
+            echo "===== tailscale status ====="
+            docker exec kali-cloud tailscale status || true
             exit 1
           fi
           
