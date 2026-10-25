@@ -20,25 +20,25 @@ jobs:
             kalilinux/kali-rolling \
             sleep infinity
 
-      - name: 2. Fix Mirrors & Install SSH, RDP, Desktop Environment
+      - name: 2. Switch to Aliyun Mirror & Install SSH, RDP, Desktop Environment
         run: |
           docker exec kali-cloud bash -c "
-            # 1. 直接覆写源列表为 HTTP 协议，并清理可能存在的多余源配置（避免 SSL 报错）
-            echo 'deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list
+            # 1. 直接覆写源列表为阿里云 HTTPS 源（国内网络稳定）
+            echo 'deb https://mirrors.aliyun.com/kali kali-rolling main non-free contrib non-free-firmware' > /etc/apt/sources.list
             rm -f /etc/apt/sources.list.d/*.sources
-            
-            # 2. 首次更新并安装 ca-certificates（提供 HTTPS 支持）
+
+            # 2. 首次更新（此时容器内可能尚无 ca-certificates，如果 HTTPS 证书报错则回退 HTTP）
             apt-get clean &&
-            apt-get update &&
-            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates &&
-            update-ca-certificates &&
-            
-            # 3. 再次更新（此时已具备 https 能力）并安装所需软件
+            (apt-get update || (sed -i 's@https://@http://@g' /etc/apt/sources.list && apt-get update)) &&
+
+            # 3. 安装基础依赖，包含 ca-certificates 和 curl
+            DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl &&
+
+            # 4. 再次更新索引（确保 HTTPS 源完全可用）并安装完整桌面与远程服务
             apt-get update &&
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
-              curl \
               xrdp \
               xfce4 \
               xfce4-terminal \
@@ -56,7 +56,7 @@ jobs:
             echo 'nvdadmin:P@ssw0rd1qazXSW@#' | chpasswd &&
             usermod -aG sudo nvdadmin &&
 
-            # 配置 XFCE 会话（写入 .xsession 和 startwm.sh 双保险）
+            # 配置 XFCE 会话（双保险：.xsession + startwm.sh）
             echo 'xfce4-session' > /home/nvdadmin/.xsession &&
             chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
             sed -i 's/^#*startxfce4.*/startxfce4/' /etc/xrdp/startwm.sh || true &&
@@ -73,14 +73,12 @@ jobs:
         run: |
           docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh || true"
 
-          # 后台常驻启动 tailscaled
           docker exec -d kali-cloud /usr/sbin/tailscaled \
             --state=/var/lib/tailscale/tailscaled.state \
             --socket=/var/run/tailscale/tailscaled.sock
 
           sleep 8
 
-          # 连接 Tailscale 网络（使用 --ephemeral 防止残留僵尸设备）
           docker exec kali-cloud bash -c "
             tailscale up \
               --authkey=${{ secrets.TAILSCALE_AUTHKEY }} \
@@ -102,10 +100,8 @@ jobs:
 
       - name: 5. Start SSH & RDP Services and Keep Alive
         run: |
-          # 启动 SSH
           docker exec kali-cloud bash -c "/usr/sbin/sshd"
 
-          # 启动 XRDP（清理旧PID，启动，验证双进程）
           docker exec kali-cloud bash -c "
             rm -f /var/run/xrdp/xrdp.pid /var/run/xrdp/xrdp-sesman.pid
             /etc/init.d/xrdp start || true
@@ -115,7 +111,6 @@ jobs:
             sleep 1
           "
 
-          # 6小时保活循环（360 * 60秒）
           for i in $(seq 1 360); do
             sleep 60
             echo "[$i/360] Server running... (container: $(docker inspect -f '{{.State.Running}}' kali-cloud))"
