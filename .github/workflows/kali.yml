@@ -33,7 +33,7 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl &&
             update-ca-certificates &&
 
-            # 3. 证书安装完毕后，将 HTTP 升级为 HTTPS（提升连接安全性）
+            # 3. 证书安装完毕后，将 HTTP 升级为 HTTPS
             sed -i 's@http://kali.download/kali@https://kali.download/kali@g' /etc/apt/sources.list &&
             apt-get update &&
 
@@ -73,23 +73,41 @@ jobs:
         env:
           TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
+          # 安装 Tailscale
           docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh || true"
 
+          # 创建必要的状态目录（防止 tailscaled 启动失败）
+          docker exec kali-cloud mkdir -p /var/lib/tailscale /var/run/tailscale
+
+          # 后台启动 tailscaled
           docker exec -d kali-cloud /usr/sbin/tailscaled \
             --state=/var/lib/tailscale/tailscaled.state \
             --socket=/var/run/tailscale/tailscaled.sock
 
-          sleep 8
+          sleep 5
 
+          # 连接网络，注意这里参数是 --authkey (无横杠)
           docker exec kali-cloud bash -c "
-            tailscale up \
-              --authkey=${{ secrets.TAILSCALE_AUTHKEY }} \
-              --hostname=kali-cloud \
-              --ephemeral
+            # 等待 tailscaled 守护进程就绪
+            for i in {1..10}; do
+              tailscale status >/dev/null 2>&1 && break
+              echo 'Waiting for tailscaled...'
+              sleep 2
+            done
+            tailscale up --authkey='${{ secrets.TAILSCALE_AUTHKEY }}' --hostname=kali-cloud --ephemeral
           "
-          sleep 10
+
+          sleep 5
 
           TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
+          
+          # 增加检查：如果没拿到 IP，打印状态并退出
+          if [ -z "$TAILSCALE_IP" ]; then
+            echo "❌ Failed to get Tailscale IP. Current status:"
+            docker exec kali-cloud tailscale status
+            exit 1
+          fi
+          
           echo "=========================================="
           echo "  >>> KALI CLOUD SERVER IS READY! <<<"
           echo "  Tailscale IP : $TAILSCALE_IP"
