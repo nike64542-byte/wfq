@@ -1,0 +1,125 @@
+name: Kali Cloud SSH + RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: 1. Start Kali Linux container
+        run: |
+          docker pull kalilinux/kali-rolling
+          docker run -d \
+            --name kali-cloud \
+            --privileged \
+            --device=/dev/net/tun \
+            -p 2222:22 \
+            kalilinux/kali-rolling \
+            sleep infinity
+
+      - name: 2. Fix Mirrors & Install SSH, RDP, Desktop Environment
+        run: |
+          docker exec kali-cloud bash -c "
+            # 1. 修复镜像源（兼容新旧两种配置文件）
+            sed -i 's@http://http.kali.org/kali@https://kali.download/kali@g' /etc/apt/sources.list 2>/dev/null || true
+            sed -i 's@http://http.kali.org/kali@https://kali.download/kali@g' /etc/apt/sources.list.d/kali.sources 2>/dev/null || true
+            
+            # 2. 清理并更新
+            apt-get clean &&
+            apt-get update &&
+            
+            # 3. 安装软件
+            DEBIAN_FRONTEND=noninteractive apt-get install -y \
+              openssh-server \
+              sudo \
+              curl \
+              ca-certificates \
+              xrdp \
+              xfce4 \
+              xfce4-terminal \
+              dbus-x11 \
+              xorgxrdp \
+              --no-install-recommends &&
+            update-ca-certificates
+          "
+
+      - name: 3. Configure Users, XRDP session & SSH
+        run: |
+          docker exec kali-cloud bash -c "
+            # 创建用户并设置密码
+            echo 'root:P@ssw0rd1qazXSW@#' | chpasswd &&
+            useradd -m -s /bin/bash nvdadmin &&
+            echo 'nvdadmin:P@ssw0rd1qazXSW@#' | chpasswd &&
+            usermod -aG sudo nvdadmin &&
+
+            # 配置 XFCE 会话（双保险：.xsession + startwm.sh）
+            echo 'xfce4-session' > /home/nvdadmin/.xsession &&
+            chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
+            sed -i 's/^#*startxfce4.*/startxfce4/' /etc/xrdp/startwm.sh || true &&
+            echo 'startxfce4' >> /etc/xrdp/startwm.sh &&
+
+            # 确保 SSH 允许密码登录
+            sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+            sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
+          "
+
+      - name: 4. Install & Connect Tailscale (ephemeral node)
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh || true"
+
+          # 后台常驻启动 tailscaled
+          docker exec -d kali-cloud /usr/sbin/tailscaled \
+            --state=/var/lib/tailscale/tailscaled.state \
+            --socket=/var/run/tailscale/tailscaled.sock
+
+          sleep 8
+
+          # 连接 Tailscale 网络（使用 --ephemeral 防止残留僵尸设备）
+          docker exec kali-cloud bash -c "
+            tailscale up \
+              --authkey=${{ secrets.TAILSCALE_AUTHKEY }} \
+              --hostname=kali-cloud \
+              --ephemeral
+          "
+          sleep 10
+
+          TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
+          echo "=========================================="
+          echo "  >>> KALI CLOUD SERVER IS READY! <<<"
+          echo "  Tailscale IP : $TAILSCALE_IP"
+          echo "------------------------------------------"
+          echo "  SSH: ssh nvdadmin@$TAILSCALE_IP"
+          echo "  RDP: $TAILSCALE_IP:3389"
+          echo "  Username: nvdadmin"
+          echo "  Password: P@ssw0rd1qazXSW@#"
+          echo "=========================================="
+
+      - name: 5. Start SSH & RDP Services and Keep Alive
+        run: |
+          # 启动 SSH
+          docker exec kali-cloud bash -c "/usr/sbin/sshd"
+
+          # 启动 XRDP（清理旧PID，启动，验证双进程）
+          docker exec kali-cloud bash -c "
+            rm -f /var/run/xrdp/xrdp.pid /var/run/xrdp/xrdp-sesman.pid
+            /etc/init.d/xrdp start || true
+            sleep 2
+            pgrep xrdp-sesman >/dev/null || /usr/sbin/xrdp-sesman --nodaemon &
+            pgrep xrdp >/dev/null || /usr/sbin/xrdp --nodaemon &
+            sleep 1
+          "
+
+          # 6小时保活循环（360 * 60秒）
+          for i in $(seq 1 360); do
+            sleep 60
+            echo "[$i/360] Server running... (container: $(docker inspect -f '{{.State.Running}}' kali-cloud))"
+            docker exec kali-cloud bash -c "pgrep sshd >/dev/null && echo 'SSH: OK' || echo 'SSH: FAILED'"
+            docker exec kali-cloud bash -c "pgrep -x xrdp >/dev/null && echo 'RDP-xrdp: OK' || echo 'RDP-xrdp: FAILED'"
+            docker exec kali-cloud bash -c "pgrep -x xrdp-sesman >/dev/null && echo 'RDP-sesman: OK' || echo 'RDP-sesman: FAILED'"
+            docker exec kali-cloud bash -c "pgrep tailscaled >/dev/null && echo 'Tailscale: OK' || echo 'Tailscale: FAILED'"
+          done
