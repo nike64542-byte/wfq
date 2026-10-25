@@ -23,8 +23,8 @@ jobs:
       - name: 2. Fix Mirrors & Install SSH, RDP, Desktop Environment
         run: |
           docker exec kali-cloud bash -c "
-            # 1. 统一写入阿里云 HTTP 源（规避容器初始缺少 CA 证书导致的 SSL 握手失败）
-            echo 'deb http://mirrors.aliyun.com/kali kali-rolling main non-free contrib non-free-firmware' > /etc/apt/sources.list
+            # 1. 统一覆写为 Kali 官方推荐的 Cloudflare CDN 源 (初始使用 HTTP 防止证书报错)
+            echo 'deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list
             rm -f /etc/apt/sources.list.d/*.sources
 
             # 2. 首次更新并安装基础证书组件
@@ -34,7 +34,7 @@ jobs:
             update-ca-certificates &&
 
             # 3. 证书安装完毕后，将 HTTP 升级为 HTTPS（提升连接安全性）
-            sed -i 's@http://mirrors.aliyun.com/kali@https://mirrors.aliyun.com/kali@g' /etc/apt/sources.list &&
+            sed -i 's@http://kali.download/kali@https://kali.download/kali@g' /etc/apt/sources.list &&
             apt-get update &&
 
             # 4. 安装完整桌面与远程服务
