@@ -57,24 +57,16 @@ jobs:
             DEBIAN_FRONTEND=noninteractive apt-get install -y mosh &&
 
             # === Eternal Terminal — 持久远程会话，TCP 2022 ===
-            # 安装构建依赖
-            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-              libsodium-dev autoconf libtool libprotobuf-dev protobuf-compiler \
-              libutempter-dev libcurl4-openssl-dev build-essential ninja-build \
-              cmake git zip pkg-config &&
+            # 直接下载预编译 deb (Kali rolling 基于 Debian trixie, 回退 bookworm)
+            (curl -fsSL 'https://mistertea.github.io/debian-et/debian-source/pool/main/e/et/et_7.1.1-trixie1_amd64.deb' -o /tmp/et.deb ||
+             curl -fsSL 'https://mistertea.github.io/debian-et/debian-source/pool/main/e/et/et_7.1.1-bookworm1_amd64.deb' -o /tmp/et.deb) &&
 
-            # 从源码构建并打包安装 (官方未提供 amd64 预编译 deb)
-            cd /tmp &&
-            rm -rf EternalTerminal &&
-            git clone --recurse-submodules --depth 1 https://github.com/MisterTea/EternalTerminal.git &&
-            cd EternalTerminal &&
-            mkdir build && cd build &&
-            cmake -DCPACK_GENERATOR=DEB ../ &&
-            make -j\$(nproc) package &&
-            dpkg --install *.deb &&
+            # 安装 (dpkg 可能因缺少依赖报错, apt-get install -f 自动修复)
+            (dpkg --install /tmp/et.deb || true) &&
+            DEBIAN_FRONTEND=noninteractive apt-get install -f -y &&
 
-            # 写入最小配置: 绑定所有接口，端口 2022
-            printf '[Networking]\nport = 2022\nbind_ip = 0.0.0.0\n' > /etc/et.cfg
+            # 确保配置存在: 绑定所有接口, 端口 2022
+            [ -f /etc/et.cfg ] || printf '[Networking]\nport = 2022\nbind_ip = 0.0.0.0\n' > /etc/et.cfg
           "
 
       - name: 4. Configure Users, XRDP session & SSH
