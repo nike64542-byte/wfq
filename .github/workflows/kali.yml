@@ -1,4 +1,4 @@
-name: Kali Cloud SSH + RDP
+name: Kali Cloud SSH + RDP + mosh + ET
 
 on:
   workflow_dispatch:
@@ -17,6 +17,7 @@ jobs:
             --privileged \
             --device=/dev/net/tun \
             -p 2222:22 \
+            -p 2022:2022 \
             kalilinux/kali-rolling \
             sleep infinity
 
@@ -49,7 +50,34 @@ jobs:
               --no-install-recommends
           "
 
-      - name: 3. Configure Users, XRDP session & SSH
+      - name: 3. Install mosh & Eternal Terminal
+        run: |
+          docker exec kali-cloud bash -c "
+            # === mosh (Mobile Shell) — 网络中断自动重连，UDP 60000-61000 ===
+            DEBIAN_FRONTEND=noninteractive apt-get install -y mosh &&
+
+            # === Eternal Terminal — 持久远程会话，TCP 2022 ===
+            # 安装构建依赖
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              libsodium-dev autoconf libtool libprotobuf-dev protobuf-compiler \
+              libutempter-dev libcurl4-openssl-dev build-essential ninja-build \
+              cmake git zip pkg-config &&
+
+            # 从源码构建并打包安装 (官方未提供 amd64 预编译 deb)
+            cd /tmp &&
+            rm -rf EternalTerminal &&
+            git clone --recurse-submodules --depth 1 https://github.com/MisterTea/EternalTerminal.git &&
+            cd EternalTerminal &&
+            mkdir build && cd build &&
+            cmake -DCPACK_GENERATOR=DEB ../ &&
+            make -j\$(nproc) package &&
+            dpkg --install *.deb &&
+
+            # 写入最小配置: 绑定所有接口，端口 2022
+            printf '[Networking]\nport = 2022\nbind_ip = 0.0.0.0\n' > /etc/et.cfg
+          "
+
+      - name: 4. Configure Users, XRDP session & SSH
         run: |
           docker exec kali-cloud bash -c "
             # 创建用户并设置密码
@@ -69,7 +97,7 @@ jobs:
             sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config
           "
 
-      - name: 4. Install & Connect Tailscale
+      - name: 5. Install & Connect Tailscale
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
@@ -108,13 +136,16 @@ jobs:
           echo "  >>> KALI CLOUD SERVER IS READY! <<<"
           echo "  Tailscale IP : $TAILSCALE_IP"
           echo "------------------------------------------"
-          echo "  SSH: ssh nvdadmin@$TAILSCALE_IP"
-          echo "  RDP: $TAILSCALE_IP:3389"
+          echo "  SSH  : ssh nvdadmin@$TAILSCALE_IP"
+          echo "  RDP  : $TAILSCALE_IP:3389"
+          echo "  mosh : mosh nvdadmin@$TAILSCALE_IP        (UDP 60000-61000)"
+          echo "  ET   : et nvdadmin@$TAILSCALE_IP          (TCP 2022)"
+          echo "------------------------------------------"
           echo "  Username: nvdadmin"
           echo "  Password: P@ssw0rd1qazXSW@#"
           echo "=========================================="
 
-      - name: 5. Start SSH & RDP Services and Keep Alive
+      - name: 6. Start SSH, RDP, mosh & ET Services and Keep Alive
         run: |
           docker exec kali-cloud bash -c "/usr/sbin/sshd"
 
@@ -127,6 +158,15 @@ jobs:
             sleep 1
           "
 
+          # 启动 Eternal Terminal 服务端 (etserver, TCP 2022)
+          docker exec kali-cloud bash -c "
+            ETSRV=\$(command -v etserver 2>/dev/null || echo /usr/local/bin/etserver)
+            nohup \$ETSRV --cfgfile=/etc/et.cfg --logtostdout > /tmp/etserver.log 2>&1 &
+            sleep 2
+            echo '--- etserver log ---'
+            tail -5 /tmp/etserver.log 2>/dev/null || true
+          "
+
           for i in $(seq 1 360); do
             sleep 60
             echo "[$i/360] Server running... (container: $(docker inspect -f '{{.State.Running}}' kali-cloud))"
@@ -134,4 +174,6 @@ jobs:
             docker exec kali-cloud bash -c "pgrep -x xrdp >/dev/null && echo 'RDP-xrdp: OK' || echo 'RDP-xrdp: FAILED'"
             docker exec kali-cloud bash -c "pgrep -x xrdp-sesman >/dev/null && echo 'RDP-sesman: OK' || echo 'RDP-sesman: FAILED'"
             docker exec kali-cloud bash -c "pgrep tailscaled >/dev/null && echo 'Tailscale: OK' || echo 'Tailscale: FAILED'"
+            docker exec kali-cloud bash -c "pgrep -f etserver >/dev/null && echo 'ET: OK' || echo 'ET: FAILED'"
+            docker exec kali-cloud bash -c "command -v mosh-server >/dev/null && echo 'mosh: OK' || echo 'mosh: FAILED'"
           done
