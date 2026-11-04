@@ -38,13 +38,14 @@ jobs:
             sed -i 's@http://kali.download/kali@https://kali.download/kali@g' /etc/apt/sources.list &&
             apt-get update &&
 
-            # 4. 安装 MATE 桌面与远程服务
+            # 4. 安装 Cinnamon 桌面（最像 Windows 的桌面）与远程服务
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
               xrdp \
-              mate-desktop-environment-core \
-              mate-terminal \
+              cinnamon \
+              cinnamon-terminal \
+              nemo \
               dbus-x11 \
               xorgxrdp \
               openssl \
@@ -98,14 +99,15 @@ jobs:
             echo 'export LANG=en_US.UTF-8' >> /home/nvdadmin/.bashrc &&
             echo 'export LC_ALL=en_US.UTF-8' >> /home/nvdadmin/.bashrc &&
 
-            # 配置 MATE 会话 (替换了原来的 xfce4)
-            echo 'mate-session' > /home/nvdadmin/.xsession &&
+            # 🌟 配置 Cinnamon 会话
+            echo 'cinnamon-session' > /home/nvdadmin/.xsession &&
             chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
             
-            # 清理原有的 startwm.sh 启动项，写入 mate-session
+            # 清理原有的启动项，写入 cinnamon-session
             sed -i '/startxfce4/d' /etc/xrdp/startwm.sh || true
             sed -i '/mate-session/d' /etc/xrdp/startwm.sh || true
-            echo 'mate-session' >> /etc/xrdp/startwm.sh &&
+            sed -i '/cinnamon-session/d' /etc/xrdp/startwm.sh || true
+            echo 'cinnamon-session' >> /etc/xrdp/startwm.sh &&
 
             # 强制 XRDP 使用 TLS
             sed -i 's/^#*security_layer=.*/security_layer=tls/' /etc/xrdp/xrdp.ini &&
