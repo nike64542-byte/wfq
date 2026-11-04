@@ -38,14 +38,14 @@ jobs:
             sed -i 's@http://kali.download/kali@https://kali.download/kali@g' /etc/apt/sources.list &&
             apt-get update &&
 
-            # 4. 安装 Cinnamon 桌面（最像 Windows 的桌面）与远程服务
+            # 4. 安装 Cinnamon 桌面与远程服务 (已修复终端包名)
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
               xrdp \
               cinnamon \
-              cinnamon-terminal \
               nemo \
+              gnome-terminal \
               dbus-x11 \
               xorgxrdp \
               openssl \
@@ -99,7 +99,7 @@ jobs:
             echo 'export LANG=en_US.UTF-8' >> /home/nvdadmin/.bashrc &&
             echo 'export LC_ALL=en_US.UTF-8' >> /home/nvdadmin/.bashrc &&
 
-            # 🌟 配置 Cinnamon 会话
+            # 配置 Cinnamon 会话
             echo 'cinnamon-session' > /home/nvdadmin/.xsession &&
             chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
             
