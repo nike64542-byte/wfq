@@ -24,7 +24,7 @@ jobs:
       - name: 2. Fix Mirrors & Install SSH, RDP, Desktop Environment
         run: |
           docker exec kali-cloud bash -c "
-            # 1. 统一覆写为 Kali 官方推荐的 Cloudflare CDN 源 (初始使用 HTTP 防止证书报错)
+            # 1. 统一覆写为 Kali 官方推荐的 Cloudflare CDN 源
             echo 'deb http://kali.download/kali kali-rolling main contrib non-free non-free-firmware' > /etc/apt/sources.list
             rm -f /etc/apt/sources.list.d/*.sources
 
@@ -38,13 +38,13 @@ jobs:
             sed -i 's@http://kali.download/kali@https://kali.download/kali@g' /etc/apt/sources.list &&
             apt-get update &&
 
-            # 4. 安装完整桌面与远程服务 (补充了 openssl 和 ssl-cert)
+            # 4. 安装 MATE 桌面与远程服务
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
               xrdp \
-              xfce4 \
-              xfce4-terminal \
+              mate-desktop-environment-core \
+              mate-terminal \
               dbus-x11 \
               xorgxrdp \
               openssl \
@@ -55,37 +55,28 @@ jobs:
       - name: 3. Install mosh & Eternal Terminal
         run: |
           docker exec kali-cloud bash -c "
-            # === mosh (Mobile Shell) — 网络中断自动重连，UDP 60000-61000 ===
+            # === mosh ===
             DEBIAN_FRONTEND=noninteractive apt-get install -y mosh &&
 
-            # === Eternal Terminal — 持久远程会话，TCP 2022 ===
-            # 直接下载预编译 deb (Kali rolling 基于 Debian trixie, 回退 bookworm)
+            # === Eternal Terminal ===
             (curl -fsSL 'https://mistertea.github.io/debian-et/debian-source/pool/main/e/et/et_7.1.1-trixie1_amd64.deb' -o /tmp/et.deb ||
              curl -fsSL 'https://mistertea.github.io/debian-et/debian-source/pool/main/e/et/et_7.1.1-bookworm1_amd64.deb' -o /tmp/et.deb) &&
-
-            # 安装 (dpkg 可能因缺少依赖报错, apt-get install -f 自动修复)
             (dpkg --install /tmp/et.deb || true) &&
             DEBIAN_FRONTEND=noninteractive apt-get install -f -y &&
 
-            # 确保配置存在: 绑定所有接口, 端口 2022
             [ -f /etc/et.cfg ] || printf '[Networking]\nport = 2022\nbind_ip = 0.0.0.0\n' > /etc/et.cfg
           "
 
-      # 🌟 [新增] 生成 XRDP TLS 证书并强制权限
       - name: 3.5. Generate XRDP TLS Certificate & Permissions
         run: |
           docker exec kali-cloud bash -c "
-            # 1. 生成自签名证书（有效期 365 天，RSA 2048 位）
             openssl req -x509 -newkey rsa:2048 -nodes \
               -keyout /etc/xrdp/key.pem \
               -out /etc/xrdp/cert.pem \
               -days 365 \
               -subj '/CN=kali-cloud'
 
-            # 2. 将 xrdp 用户加入 ssl-cert 组，确保能读取私钥
             usermod -a -G ssl-cert xrdp
-
-            # 3. 设置严格的文件权限（仅 root 和 xrdp 组可读）
             chown root:xrdp /etc/xrdp/cert.pem /etc/xrdp/key.pem
             chmod 640 /etc/xrdp/cert.pem /etc/xrdp/key.pem
           "
@@ -93,13 +84,13 @@ jobs:
       - name: 4. Configure Users, XRDP session & SSH
         run: |
           docker exec kali-cloud bash -c "
-            # 创建用户并设置密码
+            # 创建用户
             echo 'root:P@ssw0rd1qazXSW@#' | chpasswd &&
             useradd -m -s /bin/bash nvdadmin &&
             echo 'nvdadmin:P@ssw0rd1qazXSW@#' | chpasswd &&
             usermod -aG sudo nvdadmin &&
 
-            # 配置 UTF-8 编码 (确保中文/Unicode 字符在 SSH/mosh/ET 中正常显示)
+            # 配置 UTF-8
             DEBIAN_FRONTEND=noninteractive apt-get install -y locales &&
             sed -i 's/# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen &&
             locale-gen en_US.UTF-8 &&
@@ -107,13 +98,16 @@ jobs:
             echo 'export LANG=en_US.UTF-8' >> /home/nvdadmin/.bashrc &&
             echo 'export LC_ALL=en_US.UTF-8' >> /home/nvdadmin/.bashrc &&
 
-            # 配置 XFCE 会话（双保险：.xsession + startwm.sh）
-            echo 'xfce4-session' > /home/nvdadmin/.xsession &&
+            # 配置 MATE 会话 (替换了原来的 xfce4)
+            echo 'mate-session' > /home/nvdadmin/.xsession &&
             chown nvdadmin:nvdadmin /home/nvdadmin/.xsession &&
-            sed -i 's/^#*startxfce4.*/startxfce4/' /etc/xrdp/startwm.sh || true &&
-            echo 'startxfce4' >> /etc/xrdp/startwm.sh &&
+            
+            # 清理原有的 startwm.sh 启动项，写入 mate-session
+            sed -i '/startxfce4/d' /etc/xrdp/startwm.sh || true
+            sed -i '/mate-session/d' /etc/xrdp/startwm.sh || true
+            echo 'mate-session' >> /etc/xrdp/startwm.sh &&
 
-            # 🌟 [新增] 强制 XRDP 使用 TLS 安全层，并显式指定证书路径
+            # 强制 XRDP 使用 TLS
             sed -i 's/^#*security_layer=.*/security_layer=tls/' /etc/xrdp/xrdp.ini &&
             grep -q '^security_layer' /etc/xrdp/xrdp.ini || echo 'security_layer=tls' >> /etc/xrdp/xrdp.ini &&
             sed -i 's|^#*certificate=.*|certificate=/etc/xrdp/cert.pem|' /etc/xrdp/xrdp.ini &&
@@ -121,7 +115,7 @@ jobs:
             sed -i 's|^#*key_file=.*|key_file=/etc/xrdp/key.pem|' /etc/xrdp/xrdp.ini &&
             grep -q '^key_file' /etc/xrdp/xrdp.ini || echo 'key_file=/etc/xrdp/key.pem' >> /etc/xrdp/xrdp.ini &&
 
-            # 确保 SSH 允许密码登录，且禁止 root 登录，接受 UTF-8 环境变量
+            # SSH 配置
             sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
             sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config &&
             sed -i 's/^#*AcceptEnv.*/AcceptEnv LANG LC_*/' /etc/ssh/sshd_config || echo 'AcceptEnv LANG LC_*' >> /etc/ssh/sshd_config
@@ -131,34 +125,22 @@ jobs:
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTHKEY }}
         run: |
-          # 1. 启动 D-Bus 服务（解决 system scope bus Host is down 报错）
           docker exec kali-cloud bash -c "service dbus start || true"
-
-          # 2. 安装 Tailscale
           docker exec kali-cloud bash -c "curl -fsSL https://tailscale.com/install.sh | sh || true"
-
-          # 3. 创建状态目录并用 nohup 在后台启动 tailscaled（附带日志）
           docker exec kali-cloud bash -c "
             mkdir -p /var/lib/tailscale /var/run/tailscale
             nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock > /tmp/tailscaled.log 2>&1 &
           "
           sleep 5
-
-          # 4. 通过环境变量注入 Key，并且移除当前版本不支持的 --ephemeral 参数
           docker exec -e INNER_KEY="$TS_KEY" kali-cloud \
             bash -c 'tailscale up --authkey="$INNER_KEY" --hostname=kali-cloud'
-
           sleep 10
 
           TAILSCALE_IP=$(docker exec kali-cloud tailscale ip -4)
           
-          # 检查：如果没拿到 IP，打印 daemon 日志和状态并退出
           if [ -z "$TAILSCALE_IP" ]; then
             echo "❌ Failed to get Tailscale IP."
-            echo "===== tailscaled log ====="
             docker exec kali-cloud cat /tmp/tailscaled.log || true
-            echo "===== tailscale status ====="
-            docker exec kali-cloud tailscale status || true
             exit 1
           fi
           
@@ -171,14 +153,13 @@ jobs:
           echo "  mosh : mosh nvdadmin@$TAILSCALE_IP        (UDP 60000-61000)"
           echo "  ET   : et nvdadmin@$TAILSCALE_IP          (TCP 2022)"
           echo "------------------------------------------"
-          echo "  Username: nvdadmin"
+          echo "  Username: nvdadmin (全小写)"
           echo "  Password: P@ssw0rd1qazXSW@#"
           echo "=========================================="
 
       - name: 6. Start SSH, RDP, mosh & ET Services and Keep Alive
         run: |
           docker exec kali-cloud bash -c "/usr/sbin/sshd"
-
           docker exec kali-cloud bash -c "
             rm -f /var/run/xrdp/xrdp.pid /var/run/xrdp/xrdp-sesman.pid
             /etc/init.d/xrdp start || true
@@ -187,16 +168,10 @@ jobs:
             pgrep xrdp >/dev/null || /usr/sbin/xrdp --nodaemon &
             sleep 1
           "
-
-          # 启动 Eternal Terminal 服务端 (etserver, TCP 2022)
           docker exec kali-cloud bash -c "
             ETSRV=\$(command -v etserver 2>/dev/null || echo /usr/local/bin/etserver)
             nohup \$ETSRV --cfgfile=/etc/et.cfg --logtostdout > /tmp/etserver.log 2>&1 &
-            sleep 2
-            echo '--- etserver log ---'
-            tail -5 /tmp/etserver.log 2>/dev/null || true
           "
-
           for i in $(seq 1 360); do
             sleep 60
             echo "[$i/360] Server running... (container: $(docker inspect -f '{{.State.Running}}' kali-cloud))"
@@ -205,5 +180,4 @@ jobs:
             docker exec kali-cloud bash -c "pgrep -x xrdp-sesman >/dev/null && echo 'RDP-sesman: OK' || echo 'RDP-sesman: FAILED'"
             docker exec kali-cloud bash -c "pgrep tailscaled >/dev/null && echo 'Tailscale: OK' || echo 'Tailscale: FAILED'"
             docker exec kali-cloud bash -c "pgrep -f etserver >/dev/null && echo 'ET: OK' || echo 'ET: FAILED'"
-            docker exec kali-cloud bash -c "command -v mosh-server >/dev/null && echo 'mosh: OK' || echo 'mosh: FAILED'"
           done
