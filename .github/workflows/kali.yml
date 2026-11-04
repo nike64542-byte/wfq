@@ -38,7 +38,7 @@ jobs:
             sed -i 's@http://kali.download/kali@https://kali.download/kali@g' /etc/apt/sources.list &&
             apt-get update &&
 
-            # 4. 安装完整桌面与远程服务
+            # 4. 安装完整桌面与远程服务 (补充了 openssl 和 ssl-cert)
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
               openssh-server \
               sudo \
@@ -47,6 +47,8 @@ jobs:
               xfce4-terminal \
               dbus-x11 \
               xorgxrdp \
+              openssl \
+              ssl-cert \
               --no-install-recommends
           "
 
@@ -67,6 +69,25 @@ jobs:
 
             # 确保配置存在: 绑定所有接口, 端口 2022
             [ -f /etc/et.cfg ] || printf '[Networking]\nport = 2022\nbind_ip = 0.0.0.0\n' > /etc/et.cfg
+          "
+
+      # 🌟 [新增] 生成 XRDP TLS 证书并强制权限
+      - name: 3.5. Generate XRDP TLS Certificate & Permissions
+        run: |
+          docker exec kali-cloud bash -c "
+            # 1. 生成自签名证书（有效期 365 天，RSA 2048 位）
+            openssl req -x509 -newkey rsa:2048 -nodes \
+              -keyout /etc/xrdp/key.pem \
+              -out /etc/xrdp/cert.pem \
+              -days 365 \
+              -subj '/CN=kali-cloud'
+
+            # 2. 将 xrdp 用户加入 ssl-cert 组，确保能读取私钥
+            usermod -a -G ssl-cert xrdp
+
+            # 3. 设置严格的文件权限（仅 root 和 xrdp 组可读）
+            chown root:xrdp /etc/xrdp/cert.pem /etc/xrdp/key.pem
+            chmod 640 /etc/xrdp/cert.pem /etc/xrdp/key.pem
           "
 
       - name: 4. Configure Users, XRDP session & SSH
@@ -92,10 +113,18 @@ jobs:
             sed -i 's/^#*startxfce4.*/startxfce4/' /etc/xrdp/startwm.sh || true &&
             echo 'startxfce4' >> /etc/xrdp/startwm.sh &&
 
+            # 🌟 [新增] 强制 XRDP 使用 TLS 安全层，并显式指定证书路径
+            sed -i 's/^#*security_layer=.*/security_layer=tls/' /etc/xrdp/xrdp.ini &&
+            grep -q '^security_layer' /etc/xrdp/xrdp.ini || echo 'security_layer=tls' >> /etc/xrdp/xrdp.ini &&
+            sed -i 's|^#*certificate=.*|certificate=/etc/xrdp/cert.pem|' /etc/xrdp/xrdp.ini &&
+            grep -q '^certificate' /etc/xrdp/xrdp.ini || echo 'certificate=/etc/xrdp/cert.pem' >> /etc/xrdp/xrdp.ini &&
+            sed -i 's|^#*key_file=.*|key_file=/etc/xrdp/key.pem|' /etc/xrdp/xrdp.ini &&
+            grep -q '^key_file' /etc/xrdp/xrdp.ini || echo 'key_file=/etc/xrdp/key.pem' >> /etc/xrdp/xrdp.ini &&
+
             # 确保 SSH 允许密码登录，且禁止 root 登录，接受 UTF-8 环境变量
             sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
             sed -i 's/^#*PermitRootLogin.*/PermitRootLogin no/' /etc/ssh/sshd_config &&
-            sed -i 's/^#*AcceptEnv.*/AcceptEnv LANG LC_*' /etc/ssh/sshd_config || echo 'AcceptEnv LANG LC_*' >> /etc/ssh/sshd_config
+            sed -i 's/^#*AcceptEnv.*/AcceptEnv LANG LC_*/' /etc/ssh/sshd_config || echo 'AcceptEnv LANG LC_*' >> /etc/ssh/sshd_config
           "
 
       - name: 5. Install & Connect Tailscale
